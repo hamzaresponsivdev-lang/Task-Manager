@@ -1,3 +1,10 @@
+/**
+ * Component: Login
+ * Description: Handles user authentication by taking email and password credentials,
+ * communicating with the Express backend via custom API utility, managing loading/error states,
+ * and navigating to the dashboard upon successful authentication.
+ */
+
 import { useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { apiRequest } from "../api";
@@ -35,14 +42,20 @@ export default function Login() {
         </h2>
 
         {error && (
-          <div role="alert" className="bg-red-50 border border-red-200 text-red-600 px-4 py-3 rounded-lg mb-4 text-sm">
+          <div
+            role="alert"
+            className="bg-red-50 border border-red-200 text-red-600 px-4 py-3 rounded-lg mb-4 text-sm"
+          >
             {error}
           </div>
         )}
 
         <form onSubmit={handleLogin} className="space-y-4">
           <div>
-            <label htmlFor="email" className="block text-sm font-medium text-gray-700 mb-1">
+            <label
+              htmlFor="email"
+              className="block text-sm font-medium text-gray-700 mb-1"
+            >
               Email Address
             </label>
             <input
@@ -57,7 +70,10 @@ export default function Login() {
           </div>
 
           <div>
-            <label htmlFor="password" className="block text-sm font-medium text-gray-700 mb-1">
+            <label
+              htmlFor="password"
+              className="block text-sm font-medium text-gray-700 mb-1"
+            >
               Password
             </label>
             <input
