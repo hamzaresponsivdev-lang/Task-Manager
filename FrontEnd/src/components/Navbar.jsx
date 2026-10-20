@@ -1,6 +1,6 @@
 import { useNavigate } from "react-router-dom";
 import { useState } from "react";
-import { apiRequest } from "../api";
+import { apiRequest, setSessionToken } from "../api";
 
 export default function Navbar() {
   const navigate = useNavigate();
@@ -10,6 +10,7 @@ export default function Navbar() {
     setError("");
     try {
       await apiRequest("/auth/logout", { method: "POST" });
+      setSessionToken(null);
       navigate("/login", { replace: true });
     } catch (requestError) {
       setError(requestError.message);

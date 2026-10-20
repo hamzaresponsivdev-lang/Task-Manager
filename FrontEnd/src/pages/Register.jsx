@@ -19,7 +19,7 @@ export default function Register() {
         method: "POST",
         body: JSON.stringify({ email, password }),
       });
-      navigate("/login");
+      navigate("/dashboard", { replace: true });
     } catch (err) {
       setError(err.message);
     } finally {

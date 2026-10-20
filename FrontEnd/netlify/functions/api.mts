@@ -33,8 +33,15 @@ const taskColumns = {
 
 type User = { id: number; email: string };
 
+// Auth responses are per-user, so they must never be cached.
+const NO_STORE = { "Cache-Control": "private, no-store" };
+
+function json(body: unknown, init: { status?: number; headers?: Record<string, string> } = {}) {
+  return Response.json(body, { status: init.status, headers: { ...NO_STORE, ...init.headers } });
+}
+
 function error(message: string, status: number) {
-  return Response.json({ error: message }, { status });
+  return json({ error: message }, { status });
 }
 
 async function readBody(req: Request): Promise<Record<string, unknown>> {
@@ -69,8 +76,33 @@ function sessionCookie(value: string, maxAge: number) {
   return `${SESSION_COOKIE}=${value}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAge}`;
 }
 
-async function getUser(context: Context): Promise<User | null> {
-  const sessionId = context.cookies.get(SESSION_COOKIE);
+// The session id is sent as a bearer token so sign-in also works where browsers block the
+// cookie (for example when the app is shown inside an embedded preview frame).
+function getSessionId(req: Request, context: Context) {
+  const bearer = req.headers.get("authorization")?.match(/^Bearer\s+([0-9a-f]{64})$/i)?.[1];
+  return bearer || context.cookies.get(SESSION_COOKIE) || null;
+}
+
+async function createSession(user: User, status = 200, extra: Record<string, unknown> = {}) {
+  // Clear out this user's expired sessions while issuing a new one.
+  await db
+    .delete(sessions)
+    .where(and(eq(sessions.userId, user.id), sql`${sessions.expiresAt} <= now()`));
+  const sessionId = randomBytes(32).toString("hex");
+  await db.insert(sessions).values({
+    id: sessionId,
+    userId: user.id,
+    expiresAt: new Date(Date.now() + SESSION_MAX_AGE_SECONDS * 1000),
+  });
+
+  return json(
+    { ...extra, user: { id: user.id, email: user.email }, token: sessionId },
+    { status, headers: { "Set-Cookie": sessionCookie(sessionId, SESSION_MAX_AGE_SECONDS) } },
+  );
+}
+
+async function getUser(req: Request, context: Context): Promise<User | null> {
+  const sessionId = getSessionId(req, context);
   if (!sessionId) return null;
 
   const [row] = await db
@@ -97,7 +129,7 @@ async function handleAuth(req: Request, context: Context, action: string) {
       .returning({ id: users.id, email: users.email, created_at: users.createdAt });
     if (!user) return error("Email is already registered", 400);
 
-    return Response.json({ message: "User registered successfully", user }, { status: 201 });
+    return createSession(user, 201, { message: "User registered successfully" });
   }
 
   if (action === "login" && req.method === "POST") {
@@ -112,32 +144,18 @@ async function handleAuth(req: Request, context: Context, action: string) {
       return error("Incorrect email or password.", 401);
     }
 
-    // Clear out this user's expired sessions while issuing a new one.
-    await db
-      .delete(sessions)
-      .where(and(eq(sessions.userId, user.id), sql`${sessions.expiresAt} <= now()`));
-    const sessionId = randomBytes(32).toString("hex");
-    await db.insert(sessions).values({
-      id: sessionId,
-      userId: user.id,
-      expiresAt: new Date(Date.now() + SESSION_MAX_AGE_SECONDS * 1000),
-    });
-
-    return Response.json(
-      { message: "Logged in successfully", user: { id: user.id, email: user.email } },
-      { headers: { "Set-Cookie": sessionCookie(sessionId, SESSION_MAX_AGE_SECONDS) } },
-    );
+    return createSession(user, 200, { message: "Logged in successfully" });
   }
 
   if (action === "me" && req.method === "GET") {
-    const user = await getUser(context);
-    return Response.json({ authenticated: Boolean(user), user });
+    const user = await getUser(req, context);
+    return json({ authenticated: Boolean(user), user });
   }
 
   if (action === "logout" && req.method === "POST") {
-    const sessionId = context.cookies.get(SESSION_COOKIE);
+    const sessionId = getSessionId(req, context);
     if (sessionId) await db.delete(sessions).where(eq(sessions.id, sessionId));
-    return Response.json(
+    return json(
       { message: "Logged out successfully" },
       { headers: { "Set-Cookie": sessionCookie("", 0) } },
     );
@@ -155,7 +173,7 @@ async function handleTeams(req: Request, user: User, segments: string[]) {
       .from(teams)
       .where(eq(teams.createdBy, user.id))
       .orderBy(desc(teams.createdAt));
-    return Response.json({ teams: rows });
+    return json({ teams: rows });
   }
 
   if (req.method === "POST") {
@@ -167,7 +185,7 @@ async function handleTeams(req: Request, user: User, segments: string[]) {
       .insert(teams)
       .values({ name, createdBy: user.id })
       .returning(teamColumns);
-    return Response.json({ message: "Team created successfully", team }, { status: 201 });
+    return json({ message: "Team created successfully", team }, { status: 201 });
   }
 
   return error("Not found.", 404);
@@ -204,13 +222,13 @@ async function handleTasks(req: Request, user: User, segments: string[]) {
       .insert(tasks)
       .values({ title, description, teamId, status: "To Do" })
       .returning(taskColumns);
-    return Response.json({ message: "Task created successfully", task }, { status: 201 });
+    return json({ message: "Task created successfully", task }, { status: 201 });
   }
 
   // GET /tasks/team/:teamId
   if (segments.length === 2 && segments[0] === "team" && req.method === "GET") {
     const teamId = parseId(segments[1]);
-    if (!teamId) return Response.json({ tasks: [] });
+    if (!teamId) return json({ tasks: [] });
 
     const rows = await db
       .select(taskColumns)
@@ -218,7 +236,7 @@ async function handleTasks(req: Request, user: User, segments: string[]) {
       .innerJoin(teams, eq(teams.id, tasks.teamId))
       .where(and(eq(tasks.teamId, teamId), eq(teams.createdBy, user.id)))
       .orderBy(desc(tasks.createdAt));
-    return Response.json({ tasks: rows });
+    return json({ tasks: rows });
   }
 
   // PATCH /tasks/:id/status
@@ -238,7 +256,7 @@ async function handleTasks(req: Request, user: User, segments: string[]) {
       .set({ status })
       .where(eq(tasks.id, ownedId))
       .returning(taskColumns);
-    return Response.json({ message: "Task status updated successfully", task });
+    return json({ message: "Task status updated successfully", task });
   }
 
   // DELETE /tasks/:id
@@ -248,7 +266,7 @@ async function handleTasks(req: Request, user: User, segments: string[]) {
     if (!ownedId) return error("Task not found.", 404);
 
     await db.delete(tasks).where(eq(tasks.id, ownedId));
-    return Response.json({ message: "Task deleted successfully." });
+    return json({ message: "Task deleted successfully." });
   }
 
   return error("Not found.", 404);
@@ -272,7 +290,7 @@ export default async (req: Request, context: Context) => {
       return await handleAuth(req, context, segments.join("/"));
     }
 
-    const user = await getUser(context);
+    const user = await getUser(req, context);
     if (!user) return error("Unauthorized. Please log in.", 401);
 
     if (resource === "teams") return await handleTeams(req, user, segments);
@@ -281,7 +299,7 @@ export default async (req: Request, context: Context) => {
   } catch (err) {
     console.error("API request failed:", err);
     if (resource === "health") {
-      return Response.json({ status: "unavailable", database: "disconnected" }, { status: 503 });
+      return json({ status: "unavailable", database: "disconnected" }, { status: 503 });
     }
     return error("The server could not complete the request.", 500);
   }

@@ -19,7 +19,7 @@ export default function Login() {
         method: "POST",
         body: JSON.stringify({ email, password }),
       });
-      navigate("/dashboard");
+      navigate("/dashboard", { replace: true });
     } catch (err) {
       setError(err.message);
     } finally {
