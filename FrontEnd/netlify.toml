@@ -1,0 +1,10 @@
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+# Serve the React app for client-side routes such as /login and /dashboard.
+# API paths are handled first by the function in netlify/functions/api.mts.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
